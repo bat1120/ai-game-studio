@@ -1,0 +1,1298 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>리턴 레코드: 잊힌 항해자들</title>
+<style>
+  html,body{margin:0;padding:0;background:#05080f;color:#D9E6F2;font-family:'Segoe UI',sans-serif;overflow:hidden;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#05080f;}
+  canvas{background:#0B1020;display:block;box-shadow:0 0 40px rgba(126,230,216,.15);}
+  #login{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;
+    background:radial-gradient(ellipse at 50% 30%,#1E2F4F 0%,#0B1020 70%);z-index:10;}
+  #login h1{font-size:38px;letter-spacing:3px;color:#D9E6F2;text-shadow:0 0 18px #7EE6D8;margin:0 0 6px;}
+  #login .sub{color:#7EE6D8;font-size:15px;margin-bottom:22px;letter-spacing:1px;}
+  .panel{background:rgba(11,16,32,.85);border:1px solid #7EE6D8;border-radius:10px;padding:24px 28px;width:340px;}
+  .panel input{width:100%;box-sizing:border-box;background:#0B1020;border:1px solid #1E2F4F;color:#D9E6F2;
+    padding:10px;border-radius:6px;margin:6px 0;font-size:14px;}
+  .panel input:focus{outline:none;border-color:#7EE6D8;}
+  .btn{background:#1E2F4F;border:1px solid #7EE6D8;color:#D9E6F2;padding:10px;border-radius:6px;cursor:pointer;
+    font-size:14px;width:100%;margin-top:8px;transition:.15s;}
+  .btn:hover{background:#7EE6D8;color:#0B1020;}
+  .btn.small{width:auto;padding:5px 10px;font-size:12px;margin:0;}
+  .acc{display:flex;justify-content:space-between;align-items:center;background:#0B1020;border:1px solid #1E2F4F;
+    border-radius:6px;padding:8px 10px;margin:4px 0;cursor:pointer;font-size:13px;}
+  .acc:hover{border-color:#7EE6D8;}
+  #accList{max-height:130px;overflow-y:auto;margin:10px 0;}
+  .hint{color:#B7C7D9;font-size:11px;margin-top:10px;line-height:1.5;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="960" height="600"></canvas>
+  <div id="login">
+    <h1>리턴 레코드</h1>
+    <div class="sub">잊힌 항해자들 — 잃어도, 돌아오면 된다.</div>
+    <div class="panel">
+      <div id="accList"></div>
+      <input id="nick" type="text" placeholder="닉네임" autofocus maxlength="14">
+      <input id="pw" type="password" placeholder="비밀번호 (선택)">
+      <button class="btn" id="loginBtn">로그인 / 계정 생성</button>
+      <button class="btn" id="guestBtn">게스트로 시작</button>
+      <div class="hint">Enter: 로그인 또는 생성 · 계정 클릭: 로그인<br>이동 A/D · 공격 J · 스킬 K/L/U · 회피 Shift · 지원 Q</div>
+    </div>
+  </div>
+</div>
+<script>
+"use strict";
+(function(){
+// ---------- safety wrapper ----------
+let canvas, ctx;
+try{
+  canvas=document.getElementById('game');
+  ctx=canvas.getContext('2d');
+}catch(e){ alert('Canvas init failed'); return; }
+
+const W=960,H=600;
+
+// ---------- asset loading ----------
+const ASSETS={};
+const assetNames=['char0','char1','char2','char3','char4','char5',
+  'actor0','actor3','actor4','actor5','background',
+  'enemy_conductor','enemy_watcher','environment_gate'];
+function loadAssets(){
+  assetNames.forEach(n=>{
+    try{
+      const img=new Image();
+      img.src='assets/'+n+'.png';
+      ASSETS[n]=img;
+    }catch(e){ASSETS[n]=null;}
+  });
+}
+function ready(name){
+  const i=ASSETS[name];
+  return i && i.complete && i.naturalWidth>0;
+}
+loadAssets();
+
+// ---------- storage ----------
+const SKEY='returnrecord_saves_v1';
+function loadSaves(){
+  try{const r=localStorage.getItem(SKEY);return r?JSON.parse(r):{};}catch(e){return {};}
+}
+function persist(saves){
+  try{localStorage.setItem(SKEY,JSON.stringify(saves));}catch(e){}
+}
+let SAVES=loadSaves();
+let currentUser=null;
+function getSave(){
+  if(!currentUser) return {best:0,cleared:false,stage:0,memories:0};
+  if(!SAVES[currentUser]) SAVES[currentUser]={best:0,cleared:false,stage:0,memories:0};
+  return SAVES[currentUser];
+}
+function saveProgress(){
+  if(currentUser){persist(SAVES);}
+}
+
+// ---------- login UI ----------
+const loginEl=document.getElementById('login');
+const nickEl=document.getElementById('nick');
+const pwEl=document.getElementById('pw');
+const accListEl=document.getElementById('accList');
+
+function renderAccList(){
+  if(!accListEl) return;
+  accListEl.innerHTML='';
+  const keys=Object.keys(SAVES).filter(k=>SAVES[k] && SAVES[k]._acct);
+  keys.forEach(k=>{
+    const div=document.createElement('div');
+    div.className='acc';
+    const span=document.createElement('span');
+    span.textContent='▸ '+k+(SAVES[k].cleared?' ★':'');
+    const del=document.createElement('button');
+    del.className='btn small';del.textContent='삭제';
+    del.onclick=(ev)=>{ev.stopPropagation();delete SAVES[k];persist(SAVES);renderAccList();};
+    div.onclick=()=>{doLogin(k,SAVES[k].pw||'');};
+    div.appendChild(span);div.appendChild(del);
+    accListEl.appendChild(div);
+  });
+}
+function doLogin(name,pw){
+  name=(name||'').trim();
+  if(!name){alert('닉네임을 입력하세요');return;}
+  if(SAVES[name] && SAVES[name]._acct){
+    if((SAVES[name].pw||'')!==(pw||'')){alert('비밀번호가 일치하지 않습니다');return;}
+  }else{
+    SAVES[name]={best:0,cleared:false,stage:0,memories:0,pw:pw||'',_acct:true};
+  }
+  persist(SAVES);
+  currentUser=name;
+  if(loginEl) loginEl.style.display='none';
+  startGame();
+}
+function bindLogin(){
+  const lb=document.getElementById('loginBtn');
+  if(lb) lb.onclick=()=>doLogin(nickEl.value,pwEl.value);
+  const gb=document.getElementById('guestBtn');
+  if(gb) gb.onclick=()=>{
+    let g='게스트'+Math.floor(Math.random()*9000+1000);
+    SAVES[g]={best:0,cleared:false,stage:0,memories:0,pw:'',_acct:false,guest:true};
+    currentUser=g;persist(SAVES);
+    if(loginEl) loginEl.style.display='none';
+    startGame();
+  };
+  function onEnter(e){if(e.key==='Enter'){doLogin(nickEl.value,pwEl.value);}}
+  if(nickEl){nickEl.addEventListener('keydown',onEnter);try{nickEl.focus();}catch(_){}}
+  if(pwEl) pwEl.addEventListener('keydown',onEnter);
+  renderAccList();
+}
+bindLogin();
+
+// auto test hook
+if(new URLSearchParams(location.search).get('test')==='1'){
+  let g='QA'+Math.floor(Math.random()*9000);
+  SAVES[g]={best:0,cleared:false,stage:0,memories:0,pw:'',guest:true};
+  currentUser=g;
+  if(loginEl) loginEl.style.display='none';
+  setTimeout(()=>{try{startGame();}catch(e){console.error(e);}},50);
+}
+
+// ============================================================
+// GAME
+// ============================================================
+const SCENE={LOGIN:'LOGIN',TITLE:'TITLE',CUTSCENE:'CUTSCENE',STAGE:'STAGE',
+  STORY:'STORY',UPGRADE:'UPGRADE',BOSS:'BOSS',ENDING:'ENDING'};
+let scene=SCENE.TITLE;
+let started=false;
+
+// input
+const keys={};
+window.addEventListener('keydown',e=>{
+  keys[e.key.toLowerCase()]=true;
+  if([' ','arrowleft','arrowright','arrowup','arrowdown'].includes(e.key.toLowerCase()))e.preventDefault();
+  handleKeyPress(e.key.toLowerCase());
+});
+window.addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;});
+
+let mouse={x:0,y:0,down:false};
+canvas.addEventListener('mousemove',e=>{
+  const r=canvas.getBoundingClientRect();
+  mouse.x=(e.clientX-r.left)*(W/r.width);
+  mouse.y=(e.clientY-r.top)*(H/r.height);
+});
+canvas.addEventListener('mousedown',e=>{mouse.down=true;handleClick(mouse.x,mouse.y);});
+canvas.addEventListener('mouseup',e=>{mouse.down=false;});
+
+// ---------- screen shake & hitstop ----------
+let shake=0, hitstop=0, flash=0;
+function addShake(v){shake=Math.max(shake,v);}
+
+// ---------- particles & popups ----------
+let particles=[],popups=[];
+function spawnParticles(x,y,n,col,spd){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2,s=(Math.random()*spd+spd*0.3);
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,col,r:Math.random()*3+1.5});
+  }
+}
+function popup(x,y,txt,col){popups.push({x,y,txt,col:col||'#fff',life:1});}
+
+// ---------- stage definitions ----------
+const STAGES=[
+  {name:'폐역',rule:'회피 학습 · 잊힌 승객 출현',bg:'#16213a',waves:2,enemyCount:[3,4]},
+  {name:'선로',rule:'이동 루트 복구 · 약탈 군단',bg:'#241a1a',waves:2,enemyCount:[4,5]},
+  {name:'객차',rule:'복제·기억 관리',bg:'#1a2436',waves:2,enemyCount:[4,5]},
+];
+const BOSSES=[
+  {key:'brak',name:'적루왕 브락',char:'char4',actor:'actor4',hp:900,col:'#a8503a',
+   intro:[['적루왕 브락','선로는 내 거다. 네 기억도, 네 열차도… 전부 강탈한다.'],
+          ['번호-0','…강탈할 건 네가 아니라 나야.']],
+   phase2:'철차 강탈돌격! 객차 잔해가 부서진다!'},
+  {key:'adel',name:'감찰관 아델',char:'char3',actor:'actor3',hp:1100,col:'#7E9ED9',
+   intro:[['감찰관 아델','불완전한 기록은 삭제한다. 그것이 질서다.'],
+          ['번호-0','내 이름을 지운 게… 너희였나.'],
+          ['감찰관 아델','이름 따위, 처음부터 없었다.']],
+   phase2:'기록 말소령 — 공백 폭발 영역 전개!'},
+  {key:'nameless',name:'무명 승객',char:'char5',actor:'actor5',hp:1400,col:'#9b6fd9',
+   intro:[['무명 승객','드디어 만났네… 네 이름, 참 따뜻했어.'],
+          ['번호-0','그건 내 거야. 돌려받겠어.'],
+          ['무명 승객','가져갈게. 네가 사라지면, 내가 너로 남을 테니.']],
+   phase2:'이름 도둑질 — 네 스킬을 복제한다!'},
+];
+
+// ---------- player ----------
+let player=null;
+function makePlayer(){
+  return {
+    x:200,y:430,vx:0,facing:1,
+    hp:120,maxhp:120,
+    mem:0,maxmem:100,
+    w:60,h:100,
+    speed:260,
+    invuln:0,
+    attackTimer:0,combo:0,comboWindow:0,
+    lastAction:'none',
+    dashCd:0,perfectDodge:0,
+    skills:{
+      K:{cd:0,max:6,name:'잔향 칼날'},
+      L:{cd:0,max:10,name:'되감기 방벽'},
+      U:{cd:0,max:8,name:'리턴 레코드'},
+      Q:{cd:0,max:18,name:'복구선'}
+    },
+    barrier:0, barrierShock:0,
+    bob:0, hurt:0,
+    upgrades:[],
+    bladeRange:1, bladeMem:0, returnInvuln:false,
+    ally:'safe'
+  };
+}
+
+// ---------- enemies & projectiles ----------
+let enemies=[],projectiles=[],telegraphs=[],echoes=[],recoveryZones=[];
+let stageIdx=0,bossIdx=0,wave=0,waveTimer=0,score=0;
+let curBoss=null,bossPhase=1,bossActTimer=0;
+let storyData=null;
+
+function spawnEnemy(type,x){
+  const base={x,y:430,hp:40,maxhp:40,w:50,h:80,type,vx:0,
+    atkTimer:Math.random()*2+1,hurt:0,facing:-1,dead:false,deadTimer:0,sprite:null};
+  if(type==='conductor'){base.hp=base.maxhp=50;base.sprite='enemy_conductor';base.col='#a8503a';}
+  else if(type==='watcher'){base.hp=base.maxhp=40;base.sprite='enemy_watcher';base.col='#9b6fd9';base.speed=90;}
+  else {base.sprite='environment_gate';base.col='#7E9ED9';base.hp=base.maxhp=35;}
+  enemies.push(base);
+}
+
+function startWave(){
+  enemies=[];projectiles=[];telegraphs=[];
+  const st=STAGES[stageIdx];
+  const n=st.enemyCount[Math.min(wave,st.enemyCount.length-1)]||3;
+  const types=['conductor','watcher','gate'];
+  for(let i=0;i<n;i++){
+    spawnEnemy(types[i%3],600+i*120);
+  }
+}
+
+// ---------- VN dialogue ----------
+let vnQueue=[],vnIdx=0,vnText='',vnFull='',vnChar='',vnName='',vnTimer=0,vnDone=false,vnNext=null;
+function startVN(lines,onDone){
+  vnQueue=lines;vnIdx=0;vnNext=onDone;loadVNLine();
+}
+const speakerPortrait={'동료':'char1','주인공':'char0','관제음성':null,'세이프':'char1','루나':'char2',
+  '번호-0':'char0','적루왕 브락':'char4','감찰관 아델':'char3','무명 승객':'char5'};
+function loadVNLine(){
+  if(vnIdx>=vnQueue.length){if(vnNext){const f=vnNext;vnNext=null;f();}return;}
+  const ln=vnQueue[vnIdx];
+  vnName=ln[0];vnFull=ln[1];vnText='';vnTimer=0;vnDone=false;
+  vnChar=speakerPortrait[vnName]||null;
+}
+function advanceVN(){
+  if(!vnDone){vnText=vnFull;vnDone=true;return;}
+  vnIdx++;loadVNLine();
+}
+
+// ---------- handlers ----------
+function handleKeyPress(k){
+  if(scene===SCENE.TITLE){
+    if(k===' '||k==='enter') beginCutscene();
+  } else if(scene===SCENE.CUTSCENE){
+    if(k===' '||k==='enter') advanceVN();
+  } else if(scene===SCENE.STORY){
+    if(k===' '||k==='enter') advanceVN();
+  } else if(scene===SCENE.BOSS && bossIntroVN){
+    if(k===' '||k==='enter') advanceVN();
+  } else if(scene===SCENE.ENDING){
+    if(k===' '||k==='enter') {if(endingDone) restart();}
+  } else if(scene===SCENE.STAGE||scene===SCENE.BOSS){
+    if(!bossIntroVN){
+      if(k==='j') tryAttack();
+      if(k==='k') trySkillK();
+      if(k==='l') trySkillL();
+      if(k==='u') trySkillU();
+      if(k==='q') trySkillQ();
+      if(k==='shift') tryDash();
+    }
+  }
+}
+let upgradeChoices=[];
+function handleClick(x,y){
+  if(scene===SCENE.TITLE){beginCutscene();return;}
+  if(scene===SCENE.CUTSCENE||scene===SCENE.STORY){advanceVN();return;}
+  if(scene===SCENE.BOSS&&bossIntroVN){advanceVN();return;}
+  if(scene===SCENE.UPGRADE){
+    for(let i=0;i<upgradeChoices.length;i++){
+      const cx=120+i*250,cy=200,cw=210,ch=260;
+      if(x>=cx&&x<=cx+cw&&y>=cy&&y<=cy+ch){pickUpgrade(upgradeChoices[i]);return;}
+    }
+  }
+  if(scene===SCENE.ENDING&&endingDone){
+    if(x>=W/2-100&&x<=W/2+100&&y>=440&&y<=490) restart();
+  }
+}
+
+// ---------- combat actions ----------
+function tryAttack(){
+  if(player.attackTimer>0) return;
+  player.lastAction='attack';
+  player.attackTimer=0.32;
+  if(player.comboWindow>0){player.combo=(player.combo+1)%3;}else{player.combo=0;}
+  player.comboWindow=0.55;
+  const reach=80, dmg=14+player.combo*4;
+  let hit=false;
+  enemies.forEach(e=>{
+    if(e.dead) return;
+    if(Math.abs(e.x-player.x)<reach+e.w/2 && (e.x-player.x)*player.facing>-20){
+      damageEnemy(e,dmg,player.facing*4); hit=true;
+    }
+  });
+  if(curBoss && Math.abs(curBoss.x-player.x)<reach+50 && (curBoss.x-player.x)*player.facing>-30){
+    damageBoss(dmg); hit=true;
+  }
+  if(hit){
+    hitstop=player.combo===2?0.08:0.04;
+    addShake(player.combo===2?6:3);
+    flash=0.3;
+    if(player.combo===2){player.mem=Math.min(player.maxmem,player.mem+8);}
+  }
+  spawnParticles(player.x+player.facing*60,player.y-30,4,'#D9E6F2',120);
+}
+function trySkillK(){
+  const s=player.skills.K; if(s.cd>0) return;
+  s.cd=s.max; player.lastAction='skillK';
+  const reach=130*player.bladeRange;
+  for(let t=0;t<3;t++){
+    setTimeout(()=>{},0);
+  }
+  let hit=false;
+  enemies.forEach(e=>{
+    if(e.dead) return;
+    if((e.x-player.x)*player.facing>-20 && Math.abs(e.x-player.x)<reach){
+      damageEnemy(e,18+player.bladeMem*3,player.facing*5);hit=true;
+    }
+  });
+  if(curBoss && (curBoss.x-player.x)*player.facing>-30 && Math.abs(curBoss.x-player.x)<reach+40){
+    damageBoss(20);hit=true;
+  }
+  if(hit){player.mem=Math.min(player.maxmem,player.mem+6+player.bladeMem*2);addShake(4);}
+  // visual slash echoes
+  echoes.push({x:player.x+player.facing*70,y:player.y-30,life:0.4,facing:player.facing,type:'blade'});
+  flash=0.2;
+}
+function trySkillL(){
+  const s=player.skills.L; if(s.cd>0) return;
+  s.cd=s.max; player.lastAction='skillL';
+  player.barrier=2.5; player.invuln=0.4;
+  spawnParticles(player.x,player.y-40,12,'#7EE6D8',80);
+}
+function trySkillU(){
+  const s=player.skills.U; if(s.cd>0) return;
+  s.cd=s.max;
+  // Return Record: replicate last action
+  const la=player.lastAction;
+  addShake(6);flash=0.5;
+  echoes.push({x:player.x,y:player.y-40,life:0.6,facing:player.facing,type:'return'});
+  spawnParticles(player.x,player.y-40,16,'#9b6fd9',140);
+  if(player.returnInvuln) player.invuln=Math.max(player.invuln,0.3);
+  if(la==='attack'||la==='none'){
+    // echo clone strike
+    enemies.forEach(e=>{if(!e.dead&&Math.abs(e.x-player.x)<150)damageEnemy(e,26,player.facing*6);});
+    if(curBoss&&Math.abs(curBoss.x-player.x)<190)damageBoss(34);
+    echoes.push({x:player.x+player.facing*90,y:player.y-30,life:0.5,facing:player.facing,type:'clone'});
+  } else if(la==='dodge'){
+    // teleport counter
+    const tx=mouse.x;
+    player.x=Math.max(60,Math.min(W-60,player.x+player.facing*180));
+    enemies.forEach(e=>{if(!e.dead&&Math.abs(e.x-player.x)<140)damageEnemy(e,30,player.facing*8);});
+    if(curBoss&&Math.abs(curBoss.x-player.x)<180)damageBoss(40);
+    player.invuln=0.3;
+  } else if(la==='skillK'){
+    enemies.forEach(e=>{if(!e.dead&&(e.x-player.x)*player.facing>-20&&Math.abs(e.x-player.x)<160)damageEnemy(e,22,player.facing*5);});
+    if(curBoss&&Math.abs(curBoss.x-player.x)<200)damageBoss(28);
+    echoes.push({x:player.x+player.facing*70,y:player.y-30,life:0.4,facing:player.facing,type:'blade'});
+  } else if(la==='skillL'){
+    player.barrier=2; player.invuln=0.3;
+  }
+  popup(player.x,player.y-110,'RETURN',' #9b6fd9');
+}
+function trySkillQ(){
+  const s=player.skills.Q; if(s.cd>0) return;
+  s.cd=s.max;
+  if(player.ally==='safe'){
+    recoveryZones.push({x:player.x,life:4,r:110});
+    player.speed=320;
+    setTimeout(()=>{if(player)player.speed=260;},4000);
+    // cooldown accel
+    Object.values(player.skills).forEach(sk=>{if(sk!==s)sk.cd=Math.max(0,sk.cd-2);});
+    player.hp=Math.min(player.maxhp,player.hp+15);
+    popup(player.x,player.y-110,'복구선','#7EE6D8');
+  } else {
+    // luna decode
+    if(curBoss) curBoss.telegraphHint=3;
+    for(let i=0;i<2;i++) echoes.push({x:player.x+(i?80:-80),y:player.y-40,life:3,facing:player.facing,type:'phantom'});
+    popup(player.x,player.y-110,'잔향 해독','#9b6fd9');
+  }
+  spawnParticles(player.x,player.y,10,player.ally==='safe'?'#7EE6D8':'#9b6fd9',70);
+}
+function tryDash(){
+  if(player.dashCd>0) return;
+  player.dashCd=0.6; player.lastAction='dodge';
+  const dir=keys['a']||keys['arrowleft']?-1:(keys['d']||keys['arrowright']?1:player.facing);
+  player.x=Math.max(60,Math.min(W-60,player.x+dir*150));
+  player.facing=dir;
+  player.invuln=0.4;
+  // perfect dodge check - if enemy attacking close
+  let near=enemies.some(e=>!e.dead&&Math.abs(e.x-player.x)<100&&e.atkTimer<0.4);
+  if(near||(curBoss&&bossActTimer<0.5)){
+    player.perfectDodge=0.3;
+    Object.values(player.skills).forEach(sk=>sk.cd=Math.max(0,sk.cd-1));
+    popup(player.x,player.y-100,'PERFECT','#7EE6D8');
+    addShake(4);
+  }
+  echoes.push({x:player.x-dir*80,y:player.y-30,life:0.3,facing:dir,type:'dash'});
+  spawnParticles(player.x,player.y,5,'#B7C7D9',60);
+}
+
+function damageEnemy(e,dmg,kb){
+  e.hp-=dmg; e.hurt=0.2; e.x+=kb;
+  popup(e.x,e.y-70,Math.round(dmg),'#fff');
+  spawnParticles(e.x,e.y-40,5,'#D9E6F2',90);
+  if(e.hp<=0&&!e.dead){
+    e.dead=true;e.deadTimer=0.5;
+    spawnParticles(e.x,e.y-40,14,e.col||'#9b6fd9',120);
+    score+=100; player.mem=Math.min(player.maxmem,player.mem+5);
+  }
+}
+function damageBoss(dmg){
+  if(!curBoss)return;
+  curBoss.hp-=dmg; curBoss.hurt=0.15;
+  popup(curBoss.x,curBoss.y-130,Math.round(dmg),'#7EE6D8');
+  spawnParticles(curBoss.x,curBoss.y-60,4,curBoss.col,80);
+  score+=15;
+  if(curBoss.hp<=0&&!curBoss.defeated){curBoss.defeated=true;onBossDefeat();}
+  // phase transition
+  if(bossPhase===1 && curBoss.hp<curBoss.maxhp*0.5){
+    bossPhase=2; flash=1; addShake(14);
+    startBossPhase2();
+  }
+}
+function hurtPlayer(dmg,kb){
+  if(player.invuln>0)return;
+  if(player.barrier>0){
+    player.barrier=0; player.barrierShock=0.4; addShake(8);
+    spawnParticles(player.x,player.y-40,18,'#7EE6D8',140);
+    // shockwave damages nearby
+    enemies.forEach(e=>{if(!e.dead&&Math.abs(e.x-player.x)<130)damageEnemy(e,20,(e.x>player.x?1:-1)*6);});
+    if(curBoss&&Math.abs(curBoss.x-player.x)<160)damageBoss(25);
+    popup(player.x,player.y-100,'BLOCK','#7EE6D8');
+    player.invuln=0.5;
+    return;
+  }
+  player.hp-=dmg; player.hurt=0.3; player.invuln=0.6;
+  player.x+=kb; addShake(7); flash=0.4;
+  popup(player.x,player.y-100,Math.round(dmg),'#ff6868');
+  spawnParticles(player.x,player.y-40,8,'#ff6868',100);
+  if(player.hp<=0){player.hp=0;onPlayerDeath();}
+}
+
+// ---------- scene flow ----------
+function startGame(){
+  if(started){ // re-login
+    scene=SCENE.TITLE; return;
+  }
+  started=true;
+  scene=SCENE.TITLE;
+  if(!loopRunning) loop(performance.now());
+}
+function beginCutscene(){
+  scene=SCENE.CUTSCENE;
+  startVN([
+    ['동료','이번에도 돌아왔네. 네가 사라질 때마다, 열차는 더 조용해져.'],
+    ['주인공','…내 이름, 기억나?'],
+    ['동료','모르지. 하지만 네가 묻는 순간, 출발할 이유는 생겨.'],
+    ['관제음성','리턴 레코드 가동. 다음 정거장까지 생존율, 불명.'],
+    ['동료','좋아. 불명이면 더 쉽게 바꿀 수 있겠지.'],
+    ['세이프','노선이 끊겼어. 하지만 아직 돌아갈 수는 있어.'],
+    ['루나','기억은 사라지지 않았어요. 감춰졌을 뿐이죠.'],
+  ],()=>{
+    enterStage(0);
+  });
+}
+function enterStage(idx){
+  stageIdx=idx;
+  scene=SCENE.STAGE;
+  if(!player)player=makePlayer();
+  player.x=200;player.invuln=0;
+  wave=0; curBoss=null; recoveryZones=[];
+  startWave();
+}
+function nextWaveOrBoss(){
+  wave++;
+  const st=STAGES[stageIdx];
+  if(wave<st.waves){
+    startWave();
+  } else {
+    enterBoss(stageIdx);
+  }
+}
+let bossIntroVN=false;
+function enterBoss(idx){
+  scene=SCENE.BOSS;
+  bossIdx=idx; bossPhase=1; bossActTimer=2;
+  const b=BOSSES[idx];
+  curBoss={x:720,y:430,hp:b.hp,maxhp:b.hp,col:b.col,def:b,defeated:false,
+    hurt:0,facing:-1,atk:0,telegraphHint:0,w:130,h:160};
+  enemies=[];projectiles=[];telegraphs=[];
+  bossIntroVN=true;
+  startVN(b.intro,()=>{bossIntroVN=false;});
+}
+function startBossPhase2(){
+  const msg=curBoss.def.phase2;
+  popup(curBoss.x,curBoss.y-180,'PHASE 2','#ff6868');
+  // brief cinematic flash handled by flash var
+}
+function onBossDefeat(){
+  spawnParticles(curBoss.x,curBoss.y-60,30,curBoss.col,180);
+  addShake(16);flash=1;
+  score+=1000;
+  setTimeout(()=>{
+    if(bossIdx<2){
+      enterStory();
+    } else {
+      enterEnding(true);
+    }
+  },800);
+}
+function enterStory(){
+  scene=SCENE.STORY;
+  const midLines=[
+    [['루나','기억을 회수할수록, 이 열차는 더 깊은 비밀을 드러내요.'],
+     ['세이프','다음 구간… 손상 기록이 되살아나고 있어. 조심해.'],
+     ['번호-0','…한 걸음 더. 내 이름에 가까워지고 있어.']],
+    [['세이프','관제기관의 흔적이야. 누군가 기록을 통제하고 있었어.'],
+     ['루나','당신 이름을 지운 게… 저들이었을지도.'],
+     ['번호-0','그럼 되찾으러 간다.']],
+  ];
+  const idx=Math.min(bossIdx,midLines.length-1);
+  startVN(midLines[idx],()=>{enterUpgrade();});
+}
+const UPGRADE_POOL=[
+  {t:'잔향 칼날: 사거리 +20%',apply:p=>p.bladeRange+=0.2},
+  {t:'잔향 칼날: 적중 시 기억 +1',apply:p=>p.bladeMem+=1},
+  {t:'되감기 방벽: 지속 +폭발',apply:p=>{p.skills.L.max=Math.max(6,p.skills.L.max-2);}},
+  {t:'리턴 레코드: 복제 시 무적',apply:p=>p.returnInvuln=true},
+  {t:'최대 체력 +30',apply:p=>{p.maxhp+=30;p.hp+=30;}},
+  {t:'전 스킬 쿨다운 -15%',apply:p=>{Object.values(p.skills).forEach(s=>s.max*=0.85);}},
+  {t:'기억 게이지 최대 +30',apply:p=>{p.maxmem+=30;}},
+];
+function enterUpgrade(){
+  scene=SCENE.UPGRADE;
+  const pool=UPGRADE_POOL.slice();
+  upgradeChoices=[];
+  for(let i=0;i<3&&pool.length;i++){
+    upgradeChoices.push(pool.splice(Math.floor(Math.random()*pool.length),1)[0]);
+  }
+}
+function pickUpgrade(u){
+  try{u.apply(player);}catch(e){}
+  player.hp=Math.min(player.maxhp,player.hp+20);
+  getSave().memories=(getSave().memories||0)+1;
+  saveProgress();
+  spawnParticles(player.x,player.y-40,20,'#7EE6D8',120);
+  enterStage(stageIdx+1<STAGES.length?stageIdx+1:stageIdx);
+  // after upgrade, next stage then next boss; but progression: stage+boss alternate
+  // We use: stage0->boss0->story->upgrade->stage1->boss1...
+  enterStageAfterUpgrade();
+}
+function enterStageAfterUpgrade(){
+  // advance to next stage based on bossIdx
+  let nextStage=bossIdx+1;
+  if(nextStage<STAGES.length){
+    enterStage(nextStage);
+  } else {
+    // go straight to next boss arena (final via boss chain)
+    enterBoss(bossIdx+1);
+  }
+}
+let endingDone=false, endingWin=false;
+function onPlayerDeath(){
+  enterEnding(false);
+}
+function enterEnding(win){
+  scene=SCENE.ENDING;
+  endingWin=win;endingDone=false;
+  const s=getSave();
+  if(score>(s.best||0))s.best=score;
+  s.stage=Math.max(s.stage||0,bossIdx);
+  if(win)s.cleared=true;
+  saveProgress();
+  const lines=win?[
+    ['번호-0','리턴 레코드… 완성했어.'],
+    ['세이프','노선이 전진하고 있어. 멈췄던 열차가, 다시 움직여.'],
+    ['루나','당신 이름… 이제 기억나요. 그리고 제 이름도.'],
+    ['번호-0','기록은 살아 있다. 다음 항로를 열어라.'],
+  ]:[
+    ['무명 승객','쉿… 이제 네 이름은 내 거야.'],
+    ['세이프','쓰러져도 된다. 레코드는 너를 다시 부른다.'],
+    ['번호-0','…다시, 돌아온다.'],
+  ];
+  startVN(lines,()=>{endingDone=true;});
+}
+function restart(){
+  player=makePlayer();
+  enemies=[];projectiles=[];telegraphs=[];echoes=[];particles=[];popups=[];
+  stageIdx=0;bossIdx=0;wave=0;score=0;curBoss=null;bossIntroVN=false;
+  endingDone=false;
+  scene=SCENE.TITLE;
+}
+
+// ============================================================
+// UPDATE
+// ============================================================
+function update(dt){
+  shake*=0.85; if(shake<0.2)shake=0;
+  if(flash>0)flash-=dt*2;
+  // particles
+  particles.forEach(p=>{p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=200*dt;p.life-=dt*1.8;});
+  particles=particles.filter(p=>p.life>0);
+  popups.forEach(p=>{p.y-=40*dt;p.life-=dt*1.2;});
+  popups=popups.filter(p=>p.life>0);
+  echoes.forEach(e=>e.life-=dt);
+  echoes=echoes.filter(e=>e.life>0);
+  recoveryZones.forEach(z=>z.life-=dt);
+  recoveryZones=recoveryZones.filter(z=>z.life>0);
+
+  if(scene===SCENE.CUTSCENE||scene===SCENE.STORY||(scene===SCENE.BOSS&&bossIntroVN)){
+    updateVN(dt); return;
+  }
+  if(scene===SCENE.STAGE||scene===SCENE.BOSS){
+    if(hitstop>0){hitstop-=dt;return;}
+    updateCombat(dt);
+  }
+}
+function updateVN(dt){
+  vnTimer+=dt;
+  if(!vnDone){
+    const chars=Math.floor(vnTimer*38);
+    if(chars>=vnFull.length){vnText=vnFull;vnDone=true;}
+    else vnText=vnFull.substring(0,chars);
+  }
+}
+function updatePlayer(dt){
+  let move=0;
+  if(keys['a']||keys['arrowleft'])move-=1;
+  if(keys['d']||keys['arrowright'])move+=1;
+  if(move!==0){player.x+=move*player.speed*dt;player.facing=move;player.bob+=dt*10;}
+  player.x=Math.max(50,Math.min(W-50,player.x));
+  if(player.attackTimer>0)player.attackTimer-=dt;
+  if(player.comboWindow>0)player.comboWindow-=dt;else player.combo=0;
+  if(player.dashCd>0)player.dashCd-=dt;
+  if(player.invuln>0)player.invuln-=dt;
+  if(player.perfectDodge>0)player.perfectDodge-=dt;
+  if(player.hurt>0)player.hurt-=dt;
+  if(player.barrier>0)player.barrier-=dt;
+  if(player.barrierShock>0)player.barrierShock-=dt;
+  Object.values(player.skills).forEach(s=>{if(s.cd>0)s.cd-=dt;});
+  // recovery zone effect
+  recoveryZones.forEach(z=>{
+    if(Math.abs(z.x-player.x)<z.r){player.hp=Math.min(player.maxhp,player.hp+8*dt);}
+  });
+}
+function updateCombat(dt){
+  updatePlayer(dt);
+  // enemies
+  enemies.forEach(e=>{
+    if(e.dead){e.deadTimer-=dt;return;}
+    if(e.hurt>0)e.hurt-=dt;
+    const dist=player.x-e.x;
+    e.facing=dist>0?1:-1;
+    if(e.type==='watcher'){
+      // ranged
+      e.atkTimer-=dt;
+      if(Math.abs(dist)>200){e.x+=Math.sign(dist)*60*dt;}
+      if(e.atkTimer<=0){
+        e.atkTimer=2.2;
+        projectiles.push({x:e.x,y:e.y-40,vx:Math.sign(dist)*220,vy:0,r:8,dmg:10,col:'#9b6fd9',from:'e'});
+      }
+    } else {
+      // melee approach
+      if(Math.abs(dist)>60){e.x+=Math.sign(dist)*(e.type==='conductor'?70:55)*dt;}
+      else{
+        e.atkTimer-=dt;
+        if(e.atkTimer<=0){
+          e.atkTimer=1.8;
+          if(Math.abs(dist)<80)hurtPlayer(e.type==='conductor'?14:10,e.facing*10);
+        }
+      }
+    }
+  });
+  enemies=enemies.filter(e=>!e.dead||e.deadTimer>0);
+  // projectiles
+  projectiles.forEach(p=>{
+    p.x+=p.vx*dt;p.y+=p.vy*dt;
+    if(p.from==='e'){
+      if(Math.abs(p.x-player.x)<35&&Math.abs(p.y-(player.y-40))<45){hurtPlayer(p.dmg,Math.sign(p.vx)*8);p.dead=true;}
+    } else {
+      if(curBoss&&Math.abs(p.x-curBoss.x)<70){damageBoss(p.dmg);p.dead=true;}
+      enemies.forEach(e=>{if(!e.dead&&Math.abs(p.x-e.x)<40){damageEnemy(e,p.dmg,Math.sign(p.vx)*5);p.dead=true;}});
+    }
+  });
+  projectiles=projectiles.filter(p=>!p.dead&&p.x>-50&&p.x<W+50);
+
+  // boss
+  if(curBoss&&!bossIntroVN){
+    updateBoss(dt);
+  }
+
+  // wave clear check
+  if(scene===SCENE.STAGE){
+    const alive=enemies.filter(e=>!e.dead).length;
+    if(alive===0){
+      nextWaveOrBoss();
+    }
+  }
+}
+function updateBoss(dt){
+  const b=curBoss;
+  if(b.hurt>0)b.hurt-=dt;
+  if(b.telegraphHint>0)b.telegraphHint-=dt;
+  bossActTimer-=dt;
+  const dist=player.x-b.x;
+  b.facing=dist>0?1:-1;
+  // slow approach
+  if(Math.abs(dist)>90)b.x+=Math.sign(dist)*(45+bossPhase*15)*dt;
+  b.x=Math.max(80,Math.min(W-80,b.x));
+  if(bossActTimer<=0){
+    chooseBossAttack();
+    bossActTimer=bossPhase===2?1.6:2.4;
+  }
+  // resolve telegraphs
+  telegraphs.forEach(t=>{
+    t.life-=dt;
+    if(t.life<=0&&!t.fired){
+      t.fired=true;
+      if(t.type==='slam'){
+        if(Math.abs(player.x-t.x)<t.r){hurtPlayer(t.dmg,Math.sign(player.x-t.x)*16);}
+        spawnParticles(t.x,430,16,b.col,140);addShake(10);
+      } else if(t.type==='void'){
+        if(Math.abs(player.x-t.x)<t.r){hurtPlayer(t.dmg,Math.sign(player.x-t.x)*10);}
+        spawnParticles(t.x,430,12,'#9b6fd9',120);
+        // sealing: temporarily disable a skill
+        const sk=['K','L'][Math.floor(Math.random()*2)];
+        player.skills[sk].cd=Math.max(player.skills[sk].cd,2);
+      }
+    }
+  });
+  telegraphs=telegraphs.filter(t=>t.life>-0.3);
+}
+function chooseBossAttack(){
+  const b=curBoss;
+  const def=b.def;
+  if(def.key==='brak'){
+    // charge dash
+    if(Math.random()<0.5||bossPhase===2){
+      telegraphs.push({x:player.x,r:120,life:0.9,type:'slam',dmg:22,col:b.col});
+    } else {
+      // dash toward player
+      const dir=Math.sign(player.x-b.x);
+      b.x+=dir*120;
+      if(Math.abs(player.x-b.x)<90)hurtPlayer(18,dir*20);
+      addShake(8);
+    }
+    if(bossPhase===2){
+      projectiles.push({x:b.x,y:b.y-50,vx:Math.sign(player.x-b.x)*260,vy:0,r:14,dmg:16,col:b.col,from:'e'});
+    }
+  } else if(def.key==='adel'){
+    // void explosions
+    const n=bossPhase===2?2:1;
+    for(let i=0;i<n;i++){
+      const tx=120+Math.random()*(W-240);
+      telegraphs.push({x:tx,r:100,life:1.1,type:'void',dmg:20,col:'#9b6fd9'});
+    }
+    if(bossPhase===2){
+      // seal volley
+      for(let i=-1;i<=1;i++)
+        projectiles.push({x:b.x,y:b.y-60,vx:Math.sign(player.x-b.x)*200+i*30,vy:0,r:10,dmg:12,col:'#7EE6D8',from:'e'});
+    }
+  } else {
+    // nameless: copy player skill
+    if(Math.random()<0.5){
+      // replicate blade-like sweep
+      telegraphs.push({x:player.x,r:130,life:0.8,type:'slam',dmg:18,col:b.col});
+    } else {
+      for(let i=-1;i<=1;i++)
+        projectiles.push({x:b.x,y:b.y-50,vx:Math.sign(player.x-b.x)*230,vy:-i*40,r:9,dmg:14,col:'#9b6fd9',from:'e'});
+    }
+    if(bossPhase===2){
+      // steal: increase cooldown
+      const ks=['K','L','U'];const sk=ks[Math.floor(Math.random()*3)];
+      player.skills[sk].cd=Math.max(player.skills[sk].cd,1.5);
+      projectiles.push({x:b.x,y:b.y-50,vx:Math.sign(player.x-b.x)*280,vy:0,r:12,dmg:16,col:'#9b6fd9',from:'e'});
+    }
+  }
+}
+
+// ============================================================
+// RENDER
+// ============================================================
+function render(){
+  ctx.save();
+  let sx=0,sy=0;
+  if(shake>0){sx=(Math.random()-0.5)*shake;sy=(Math.random()-0.5)*shake;}
+  ctx.translate(sx,sy);
+  ctx.clearRect(-20,-20,W+40,H+40);
+
+  if(scene===SCENE.TITLE) drawTitle();
+  else if(scene===SCENE.CUTSCENE) drawVNScene('#0B1020');
+  else if(scene===SCENE.STORY) drawVNScene(STAGES[Math.min(stageIdx,STAGES.length-1)].bg);
+  else if(scene===SCENE.STAGE) drawStage();
+  else if(scene===SCENE.BOSS) drawBossScene();
+  else if(scene===SCENE.UPGRADE) drawUpgrade();
+  else if(scene===SCENE.ENDING) drawEnding();
+
+  // flash overlay
+  if(flash>0){ctx.fillStyle='rgba(255,255,255,'+Math.min(0.5,flash*0.5)+')';ctx.fillRect(-20,-20,W+40,H+40);}
+  ctx.restore();
+}
+
+function drawBG(col){
+  if(ready('background')){
+    ctx.drawImage(ASSETS.background,0,0,W,H);
+    ctx.fillStyle='rgba(11,16,32,0.35)';ctx.fillRect(0,0,W,H);
+  } else {
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,col||'#0B1020');g.addColorStop(1,'#05080f');
+    ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+    // train silhouette
+    ctx.fillStyle='rgba(30,47,79,0.5)';
+    for(let i=0;i<6;i++)ctx.fillRect(60+i*160,360-((i%2)*20),120,160);
+  }
+}
+
+function drawTitle(){
+  drawBG('#1E2F4F');
+  // protagonist silhouette portrait
+  if(ready('char0')){
+    ctx.globalAlpha=0.9;
+    ctx.drawImage(ASSETS.char0,W-340,80,300,400);
+    ctx.globalAlpha=1;
+  }
+  ctx.textAlign='left';
+  ctx.fillStyle='#D9E6F2';
+  ctx.font='bold 56px Georgia,serif';
+  ctx.shadowColor='#7EE6D8';ctx.shadowBlur=20;
+  ctx.fillText('리턴 레코드',80,200);
+  ctx.shadowBlur=0;
+  ctx.font='24px Georgia,serif';
+  ctx.fillStyle='#7EE6D8';
+  ctx.fillText('잊힌 항해자들',80,245);
+  ctx.font='18px Segoe UI';
+  ctx.fillStyle='#B7C7D9';
+  ctx.fillText('"잃어도, 돌아오면 된다."',80,300);
+  ctx.fillStyle='#D9E6F2';
+  ctx.font='16px Segoe UI';
+  ctx.fillText('항해자: '+(currentUser||'-')+(getSave().cleared?'  ★클리어':''),80,350);
+  ctx.fillText('최고기록: '+(getSave().best||0)+'   복구 기억: '+(getSave().memories||0),80,376);
+  // blink
+  if(Math.floor(performance.now()/500)%2===0){
+    ctx.fillStyle='#7EE6D8';ctx.font='20px Segoe UI';
+    ctx.fillText('▶ 클릭 또는 SPACE 로 출격',80,460);
+  }
+  ctx.fillStyle='#B7C7D9';ctx.font='13px Segoe UI';
+  ctx.fillText('A/D 이동 · J 공격 · K 잔향칼날 · L 방벽 · U 리턴레코드 · Shift 회피 · Q 지원',80,510);
+}
+
+function drawVNScene(bgcol){
+  drawBG(bgcol);
+  drawVNPanel();
+}
+function drawVNPanel(){
+  // portrait
+  const px=40,py=160;
+  // dim full
+  ctx.fillStyle='rgba(11,16,32,0.4)';ctx.fillRect(0,0,W,H);
+  if(vnChar&&ready(vnChar)){
+    ctx.save();
+    ctx.globalAlpha=0.95;
+    const ph=380;
+    ctx.drawImage(ASSETS[vnChar],px,H-ph-90,ph*0.78,ph);
+    ctx.restore();
+  } else if(vnChar){
+    ctx.fillStyle='rgba(30,47,79,0.7)';
+    ctx.fillRect(px,H-440,260,350);
+    ctx.fillStyle='#7EE6D8';ctx.textAlign='center';ctx.font='16px Segoe UI';
+    ctx.fillText(vnName,px+130,H-260);ctx.textAlign='left';
+  }
+  // panel
+  const pyl=H-180;
+  ctx.fillStyle='rgba(11,16,32,0.82)';
+  ctx.fillRect(30,pyl,W-60,150);
+  ctx.strokeStyle='#7EE6D8';ctx.lineWidth=1.5;
+  ctx.strokeRect(30,pyl,W-60,150);
+  // name capsule
+  ctx.fillStyle='#1E2F4F';
+  ctx.strokeStyle='#7EE6D8';
+  const nw=ctx.measureText(vnName).width;
+  roundRect(50,pyl-18,Math.max(110,nw+40),34,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#7EE6D8';ctx.font='bold 17px Segoe UI';ctx.textAlign='left';
+  ctx.fillText(vnName,68,pyl+5);
+  // text
+  ctx.fillStyle='#D9E6F2';ctx.font='20px Segoe UI';
+  wrapText(vnText,70,pyl+50,W-160,30);
+  // prompt
+  if(vnDone&&Math.floor(performance.now()/400)%2===0){
+    ctx.fillStyle='#7EE6D8';ctx.textAlign='right';ctx.font='14px Segoe UI';
+    ctx.fillText('▼ SPACE',W-50,pyl+135);ctx.textAlign='left';
+  }
+}
+
+function drawGround(){
+  ctx.fillStyle='rgba(30,47,79,0.6)';
+  ctx.fillRect(0,500,W,100);
+  ctx.strokeStyle='rgba(126,230,216,0.2)';ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(0,500);ctx.lineTo(W,500);ctx.stroke();
+}
+
+function drawRecoveryZones(){
+  recoveryZones.forEach(z=>{
+    ctx.save();
+    ctx.globalAlpha=0.25*Math.min(1,z.life);
+    ctx.fillStyle='#7EE6D8';
+    ctx.beginPath();ctx.ellipse(z.x,500,z.r,30,0,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  });
+}
+function drawTelegraphs(){
+  telegraphs.forEach(t=>{
+    if(t.life<=0)return;
+    const a=t.fired?0:0.3+0.3*Math.sin(performance.now()/80);
+    ctx.save();
+    ctx.globalAlpha=a;
+    ctx.fillStyle=t.type==='void'?'#9b6fd9':'#ff6868';
+    ctx.beginPath();ctx.ellipse(t.x,500,t.r,34,0,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  });
+}
+function drawEnemies(){
+  enemies.forEach(e=>{
+    ctx.save();
+    if(e.dead){ctx.globalAlpha=Math.max(0,e.deadTimer/0.5);}
+    if(e.hurt>0){ctx.globalAlpha*=0.6;}
+    const drawn=ready(e.sprite);
+    ctx.translate(e.x,e.y);
+    if(e.facing>0){ctx.scale(-1,1);}
+    if(drawn){
+      const img=ASSETS[e.sprite];
+      const h=90,w=h*(img.naturalWidth/img.naturalHeight||0.7);
+      if(e.hurt>0){ctx.globalCompositeOperation='source-over';}
+      ctx.drawImage(img,-w/2,-h,w,h);
+      if(e.hurt>0){
+        ctx.globalCompositeOperation='lighter';ctx.globalAlpha=0.5;
+        ctx.drawImage(img,-w/2,-h,w,h);ctx.globalCompositeOperation='source-over';
+      }
+    } else {
+      ctx.fillStyle=e.hurt>0?'#fff':e.col;
+      ctx.fillRect(-20,-70,40,70);
+    }
+    ctx.restore();
+    // hp bar
+    if(!e.dead){
+      ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(e.x-25,e.y-95,50,5);
+      ctx.fillStyle='#ff6868';ctx.fillRect(e.x-25,e.y-95,50*(e.hp/e.maxhp),5);
+    }
+  });
+}
+function drawProjectiles(){
+  projectiles.forEach(p=>{
+    ctx.fillStyle=p.col;
+    ctx.shadowColor=p.col;ctx.shadowBlur=10;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();
+    ctx.shadowBlur=0;
+  });
+}
+function drawEchoes(){
+  echoes.forEach(e=>{
+    ctx.save();
+    const a=Math.min(1,e.life*(e.type==='phantom'?0.3:2));
+    ctx.globalAlpha=a*0.6;
+    ctx.translate(e.x,e.y);
+    if(e.facing>0)ctx.scale(-1,1);
+    if(e.type==='blade'){
+      ctx.strokeStyle='#D9E6F2';ctx.lineWidth=4;
+      ctx.beginPath();ctx.arc(0,0,70,-0.6,0.9);ctx.stroke();
+      ctx.strokeStyle='#7EE6D8';ctx.lineWidth=2;
+      ctx.beginPath();ctx.arc(0,0,90,-0.5,0.7);ctx.stroke();
+    } else if(e.type==='return'){
+      ctx.strokeStyle='#9b6fd9';ctx.lineWidth=3;
+      ctx.beginPath();ctx.arc(0,0,40+(0.6-e.life)*120,0,Math.PI*2);ctx.stroke();
+    } else if(e.type==='clone'||e.type==='phantom'){
+      ctx.globalAlpha=a*0.4;ctx.fillStyle='#9b6fd9';
+      if(ready('actor0')){
+        const img=ASSETS.actor0;const h=100,w=h*(img.naturalWidth/img.naturalHeight||0.6);
+        ctx.drawImage(img,-w/2,-h+10,w,h);
+      } else {ctx.fillRect(-25,-90,50,90);}
+    } else if(e.type==='dash'){
+      ctx.globalAlpha=a*0.35;ctx.fillStyle='#B7C7D9';
+      ctx.fillRect(-25,-90,50,90);
+    }
+    ctx.restore();
+  });
+}
+function drawPlayer(){
+  if(!player)return;
+  ctx.save();
+  ctx.translate(player.x,player.y);
+  let bob=Math.sin(player.bob)*3;
+  if(player.hurt>0){ctx.translate((Math.random()-0.5)*6,0);}
+  if(player.facing<0)ctx.scale(-1,1);
+  ctx.translate(0,bob);
+  const drawn=ready('actor0');
+  if(player.invuln>0&&Math.floor(performance.now()/60)%2===0)ctx.globalAlpha=0.5;
+  if(drawn){
+    const img=ASSETS.actor0;
+    const h=110,w=h*(img.naturalWidth/img.naturalHeight||0.55);
+    if(player.attackTimer>0)ctx.rotate(player.facing*0.05);
+    ctx.drawImage(img,-w/2,-h,w,h);
+    if(player.hurt>0){ctx.globalCompositeOperation='lighter';ctx.globalAlpha=0.4;ctx.drawImage(img,-w/2,-h,w,h);ctx.globalCompositeOperation='source-over';}
+  } else {
+    ctx.fillStyle=player.hurt>0?'#fff':'#D9E6F2';
+    ctx.fillRect(-22,-90,44,90);
+    ctx.fillStyle='#1E2F4F';ctx.fillRect(-22,-50,44,50);
+  }
+  ctx.restore();
+  // barrier
+  if(player.barrier>0){
+    ctx.save();ctx.globalAlpha=0.3+0.2*Math.sin(performance.now()/100);
+    ctx.strokeStyle='#7EE6D8';ctx.lineWidth=3;
+    ctx.beginPath();ctx.arc(player.x,player.y-50,60,0,Math.PI*2);ctx.stroke();
+    ctx.restore();
+  }
+}
+function drawBossActor(){
+  if(!curBoss)return;
+  const b=curBoss;
+  ctx.save();
+  ctx.translate(b.x,b.y);
+  if(b.facing>0)ctx.scale(-1,1);
+  if(b.hurt>0)ctx.translate((Math.random()-0.5)*5,0);
+  const drawn=ready(b.def.actor);
+  if(drawn){
+    const img=ASSETS[b.def.actor];
+    const h=180,w=h*(img.naturalWidth/img.naturalHeight||0.7);
+    ctx.drawImage(img,-w/2,-h,w,h);
+    if(b.hurt>0){ctx.globalCompositeOperation='lighter';ctx.globalAlpha=0.4;ctx.drawImage(img,-w/2,-h,w,h);ctx.globalCompositeOperation='source-over';}
+  } else {
+    ctx.fillStyle=b.hurt>0?'#fff':b.col;
+    ctx.fillRect(-50,-150,100,150);
+  }
+  ctx.restore();
+}
+
+function drawParticlesPopups(){
+  particles.forEach(p=>{
+    ctx.globalAlpha=Math.max(0,p.life);
+    ctx.fillStyle=p.col;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();
+  });
+  ctx.globalAlpha=1;
+  popups.forEach(p=>{
+    ctx.globalAlpha=Math.max(0,p.life);
+    ctx.fillStyle=p.col;ctx.font='bold 18px Segoe UI';ctx.textAlign='center';
+    ctx.fillText(p.txt,p.x,p.y);
+  });
+  ctx.globalAlpha=1;ctx.textAlign='left';
+}
+
+function drawStage(){
+  drawBG(STAGES[stageIdx].bg);
+  drawGround();
+  drawRecoveryZones();
+  drawTelegraphs();
+  drawEchoes();
+  drawEnemies();
+  drawProjectiles();
+  drawPlayer();
+  drawParticlesPopups();
+  drawHUD();
+  // stage banner
+  ctx.fillStyle='#7EE6D8';ctx.font='bold 16px Segoe UI';ctx.textAlign='right';
+  ctx.fillText('[ '+STAGES[stageIdx].name+' ]  '+STAGES[stageIdx].rule,W-20,30);
+  ctx.fillStyle='#B7C7D9';ctx.font='13px Segoe UI';
+  ctx.fillText('웨이브 '+(wave+1)+'/'+STAGES[stageIdx].waves+'  ·  적 '+enemies.filter(e=>!e.dead).length,W-20,50);
+  ctx.textAlign='left';
+}
+function drawBossScene(){
+  drawBG('#0B1020');
+  drawGround();
+  drawTelegraphs();
+  drawEchoes();
+  drawProjectiles();
+  drawBossActor();
+  drawPlayer();
+  drawParticlesPopups();
+  if(bossIntroVN){drawVNPanel();return;}
+  drawHUD();
+  // boss hp bar
+  const b=curBoss;
+  ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(180,24,600,18);
+  ctx.fillStyle=b.col;ctx.fillRect(180,24,600*Math.max(0,b.hp/b.maxhp),18);
+  ctx.strokeStyle='#D9E6F2';ctx.lineWidth=1;ctx.strokeRect(180,24,600,18);
+  ctx.fillStyle='#D9E6F2';ctx.font='bold 15px Segoe UI';ctx.textAlign='center';
+  ctx.fillText(b.def.name+'   PHASE '+bossPhase,480,16);ctx.textAlign='left';
+  if(b.telegraphHint>0){
+    ctx.fillStyle='#9b6fd9';ctx.font='14px Segoe UI';ctx.textAlign='center';
+    ctx.fillText('잔향 해독: 다음 패턴 예측 중...',480,70);ctx.textAlign='left';
+  }
+}
+
+function drawHUD(){
+  if(!player)return;
+  // portrait box
+  const hx=20,hy=H-110;
+  ctx.fillStyle='rgba(11,16,32,0.8)';ctx.fillRect(hx,hy,300,95);
+  ctx.strokeStyle='#7EE6D8';ctx.lineWidth=1;ctx.strokeRect(hx,hy,300,95);
+  if(ready('char0')){
+    ctx.save();ctx.beginPath();ctx.rect(hx+6,hy+6,70,83);ctx.clip();
+    ctx.drawImage(ASSETS.char0,hx+2,hy,90,110);ctx.restore();
+  } else {ctx.fillStyle='#1E2F4F';ctx.fillRect(hx+6,hy+6,70,83);}
+  // HP
+  ctx.fillStyle='#B7C7D9';ctx.font='11px Segoe UI';
+  ctx.fillText('번호-0',hx+85,hy+16);
+  ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(hx+85,hy+22,200,14);
+  ctx.fillStyle='#ff6868';ctx.fillRect(hx+85,hy+22,200*Math.max(0,player.hp/player.maxhp),14);
+  ctx.fillStyle='#fff';ctx.font='10px Segoe UI';ctx.fillText(Math.ceil(player.hp)+'/'+player.maxhp,hx+90,hy+33);
+  // memory gauge
+  ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(hx+85,hy+42,200,10);
+  ctx.fillStyle='#7EE6D8';ctx.fillRect(hx+85,hy+42,200*Math.max(0,player.mem/player.maxmem),10);
+  ctx.fillStyle='#7EE6D8';ctx.font='9px Segoe UI';ctx.fillText('기억',hx+85,hy+62);
+  // return record state
+  ctx.fillStyle='#9b6fd9';ctx.font='11px Segoe UI';
+  const la={attack:'공격',dodge:'회피',skillK:'칼날',skillL:'방벽',none:'-',skillU:'-'}[player.lastAction]||'-';
+  ctx.fillText('RETURN ▶ '+la,hx+85,hy+80);
+
+  // skill icons
+  const skills=[['K','잔향칼날',player.skills.K,'#7EE6D8'],['L','방벽',player.skills.L,'#B7C7D9'],
+    ['U','리턴',player.skills.U,'#9b6fd9'],['Q',player.ally==='safe'?'복구선':'해독',player.skills.Q,'#7EE6D8']];
+  let bx=W-260;
+  skills.forEach((s,i)=>{
+    const x=bx+i*60,y=H-70;
+    ctx.fillStyle='rgba(11,16,32,0.85)';ctx.fillRect(x,y,50,50);
+    ctx.strokeStyle=s[3];ctx.lineWidth=2;ctx.strokeRect(x,y,50,50);
+    ctx.fillStyle=s[3];ctx.font='bold 18px Segoe UI';ctx.textAlign='center';
+    ctx.fillText(s[0],x+25,y+24);
+    ctx.fillStyle='#B7C7D9';ctx.font='9px Segoe UI';
+    ctx.fillText(s[1],x+25,y+44);
+    if(s[2].cd>0){
+      ctx.fillStyle='rgba(0,0,0,0.65)';
+      const frac=s[2].cd/s[2].max;
+      ctx.fillRect(x,y+50-(50*frac),50,50*frac);
+      ctx.fillStyle='#fff';ctx.font='bold 13px Segoe UI';
+      ctx.fillText(s[2].cd.toFixed(1),x+25,y+30);
+    }
+    ctx.textAlign='left';
+  });
+  // score
+  ctx.fillStyle='#D9E6F2';ctx.font='14px Segoe UI';ctx.textAlign='left';
+  ctx.fillText('SCORE '+score,W-130,H-90);
+}
+
+function drawUpgrade(){
+  drawBG('#1E2F4F');
+  ctx.fillStyle='rgba(11,16,32,0.6)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#7EE6D8';ctx.font='bold 28px Georgia';ctx.textAlign='center';
+  ctx.fillText('기억 복구 — 강화 선택',W/2,120);
+  ctx.fillStyle='#B7C7D9';ctx.font='15px Segoe UI';
+  ctx.fillText('회수한 기억 조각이 너의 무기와 방어를 재구성한다',W/2,155);
+  upgradeChoices.forEach((u,i)=>{
+    const cx=120+i*250,cy=200,cw=210,ch=260;
+    const hover=mouse.x>=cx&&mouse.x<=cx+cw&&mouse.y>=cy&&mouse.y<=cy+ch;
+    ctx.fillStyle=hover?'rgba(126,230,216,0.18)':'rgba(11,16,32,0.85)';
+    ctx.fillRect(cx,cy,cw,ch);
+    ctx.strokeStyle=hover?'#7EE6D8':'#1E2F4F';ctx.lineWidth=2;
+    ctx.strokeRect(cx,cy,cw,ch);
+    ctx.fillStyle='#7EE6D8';ctx.font='bold 40px Georgia';
+    ctx.fillText(['◈','◆','◇'][i],cx+cw/2,cy+90);
+    ctx.fillStyle='#D9E6F2';ctx.font='16px Segoe UI';
+    wrapTextCentered(u.t,cx+cw/2,cy+150,cw-30,24);
+    ctx.fillStyle='#7EE6D8';ctx.font='13px Segoe UI';
+    ctx.fillText('클릭하여 선택',cx+cw/2,cy+235);
+  });
+  ctx.textAlign='left';
+}
+
+function drawEnding(){
+  drawBG(endingWin?'#1E2F4F':'#241a1a');
+  drawVNPanel();
+  if(endingDone){
+    ctx.fillStyle='rgba(11,16,32,0.6)';ctx.fillRect(0,0,W,140);
+    ctx.fillStyle=endingWin?'#7EE6D8':'#ff6868';ctx.font='bold 40px Georgia';ctx.textAlign='center';
+    ctx.fillText(endingWin?'기록은 살아 있다':'레코드는 너를 다시 부른다',W/2,70);
+    ctx.fillStyle='#D9E6F2';ctx.font='18px Segoe UI';
+    ctx.fillText('SCORE '+score+'   ·   최고기록 '+(getSave().best||0),W/2,110);
+    // restart button
+    ctx.fillStyle='#1E2F4F';ctx.strokeStyle='#7EE6D8';ctx.lineWidth=2;
+    ctx.fillRect(W/2-100,440,200,50);ctx.strokeRect(W/2-100,440,200,50);
+    ctx.fillStyle='#7EE6D8';ctx.font='bold 18px Segoe UI';
+    ctx.fillText('다시 하기',W/2,472);
+    ctx.textAlign='left';
+  }
+}
+
+// ---------- text helpers ----------
+function wrapText(text,x,y,maxW,lh){
+  const words=text.split('');
+  let line='',yy=y;
+  for(let i=0;i<words.length;i++){
+    const test=line+words[i];
+    if(ctx.measureText(test).width>maxW){ctx.fillText(line,x,yy);line=words[i];yy+=lh;}
+    else line=test;
+  }
+  ctx.fillText(line,x,yy);
+}
+function wrapTextCentered(text,cx,y,maxW,lh){
+  ctx.textAlign='center';
+  const words=text.split(' ');
+  let line='',yy=y;
+  const lines=[];
+  for(let i=0;i<words.length;i++){
+    const test=line+(line?' ':'')+words[i];
+    if(ctx.measureText(test).width>maxW){lines.push(line);line=words[i];}
+    else line=test;
+  }
+  lines.push(line);
+  lines.forEach((l,i)=>ctx.fillText(l,cx,yy+i*lh));
+}
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();
+}
+
+// ============================================================
+// LOOP
+// ============================================================
+let loopRunning=false,lastT=0;
+function loop(t){
+  loopRunning=true;
+  let dt=(t-lastT)/1000;lastT=t;
+  if(dt>0.05)dt=0.05;if(dt<0)dt=0;
+  try{
+    update(dt);
+    render();
+  }catch(e){
+    console.error(e);
+    try{
+      ctx.fillStyle='#300';ctx.fillRect(0,0,W,H);
+      ctx.fillStyle='#fff';ctx.font='14px monospace';ctx.textAlign='left';
+      ctx.fillText('ERROR: '+(e&&e.message),20,40);
+    }catch(_){}
+  }
+  requestAnimationFrame(loop);
+}
+
+// ensure loop runs even before login for test fallback
+lastT=performance.now();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
